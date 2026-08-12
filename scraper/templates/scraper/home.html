@@ -1,0 +1,77 @@
+{% extends "scraper/base.html" %}
+{% load static %}
+
+{% block content %}
+<section class="hero-card">
+  <div class="hero-text">
+    <h1>What's on that product page?</h1>
+    <p class="hero-subtitle">
+      Drop in any Amazon or Walmart product URL and we'll pull out the title, price, specs, images, and more — neatly organized for you.
+    </p>
+  </div>
+
+  <form method="post" action="{% url 'scraper:scrape' %}" class="scrape-form" id="scrape-form">
+    {% csrf_token %}
+
+    {% if form.non_field_errors %}
+      <div class="form-error-banner" role="alert">
+        {% for error in form.non_field_errors %}
+          <p>{{ error }}</p>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <label for="{{ form.url.id_for_label }}" class="form-label">{{ form.url.label }}</label>
+    <div class="input-row">
+      {{ form.url }}
+      <button type="submit" class="btn btn-primary" id="submit-btn">
+        <span class="btn-text">
+          <i data-lucide="search" class="icon icon-btn"></i>
+          Scrape product
+        </span>
+        <span class="btn-loading" hidden>
+          <span class="spinner"></span>
+          Fetching…
+        </span>
+      </button>
+    </div>
+    {% if form.url.errors %}
+      <p class="field-error">{{ form.url.errors.0 }}</p>
+    {% endif %}
+    <p class="form-hint">{{ form.url.help_text }}</p>
+  </form>
+</section>
+
+{% if scraped %}
+  <div class="success-toast" role="status">
+    <span class="toast-icon">
+      <i data-lucide="check" class="icon icon-toast"></i>
+    </span>
+    Product scraped successfully!
+  </div>
+{% endif %}
+
+{% if product %}
+<div id="product-results" data-variant-url="{% url 'scraper:scrape_variant' %}">
+  {% include "scraper/product_card.html" %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="{% static 'scraper/js/product.js' %}"></script>
+<script>
+  document.getElementById('scrape-form')?.addEventListener('submit', function () {
+    const btn = document.getElementById('submit-btn');
+    btn.querySelector('.btn-text').hidden = true;
+    btn.querySelector('.btn-loading').hidden = false;
+    btn.disabled = true;
+  });
+
+  {% if scraped %}
+  document.getElementById('results')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  {% endif %}
+
+  if (window.lucide) lucide.createIcons();
+</script>
+{% endblock %}

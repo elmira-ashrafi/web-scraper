@@ -1,0 +1,55 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Live Demo of the Web Scraper{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'scraper/css/style.css' %}">
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+</head>
+<body>
+  <div class="page-bg"></div>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="{% url 'scraper:home' %}" class="logo">
+        <span class="logo-icon" aria-hidden="true">
+          <i data-lucide="globe" class="icon icon-logo"></i>
+        </span>
+        <span class="logo-text">Live Demo of the <span class="logo-accent">Web Scraper</span></span>
+      </a>
+      <p class="powered-by">
+        <i data-lucide="sparkles" class="icon icon-sm"></i>
+        Powered by <strong>Elmira Ashrafi</strong>
+      </p>
+    </div>
+  </header>
+
+  <main class="container main-content">
+    {% if messages %}
+      {% for message in messages %}
+        <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>Paste a product link, get structured data — no account needed.</p>
+    </div>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      if (window.lucide) lucide.createIcons();
+    });
+  </script>
+</body>
+</html>

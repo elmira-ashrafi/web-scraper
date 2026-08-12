@@ -1,0 +1,9 @@
+cd "C:\Users\Ali va Amir\Downloads\New folder (8)\New folder"
+pip install -r requirements.txt
+py -3 manage.py migrate
+py -3 manage.py runserver
+
+
+
+python3 manage.py migrate
+python3 manage.py runserver

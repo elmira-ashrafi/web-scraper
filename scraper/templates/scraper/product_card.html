@@ -1,0 +1,308 @@
+<section class="product-results" id="results">
+  <div class="product-header">
+    <div class="product-header-text">
+      <span class="badge" id="product-asin-badge">
+        {% if product.store == "walmart" %}Item ID{% else %}ASIN{% endif %} {{ product.asin|default:"—" }}
+      </span>
+      <h2 id="product-title">{{ product.title|default:"Untitled product" }}</h2>
+      {% if product.brand %}
+        <p class="brand-line" id="product-brand">{{ product.brand }}</p>
+      {% endif %}
+    </div>
+    <div class="download-actions">
+      <a href="{% url 'scraper:download_json' %}" class="btn btn-outline btn-sm">
+        <i data-lucide="file-json" class="icon icon-btn"></i>
+        JSON
+      </a>
+      <a href="{% url 'scraper:download_csv' %}" class="btn btn-outline btn-sm">
+        <i data-lucide="file-spreadsheet" class="icon icon-btn"></i>
+        CSV
+      </a>
+      {% if product.url %}
+        <a href="{{ product.url }}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm" id="product-store-link">
+          <i data-lucide="external-link" class="icon icon-btn"></i>
+          View on {% if product.store == "walmart" %}Walmart{% else %}Amazon{% endif %}
+        </a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if product.variations %}
+  <div class="variations-section">
+    <div class="variation-loading" id="variant-loading" hidden>
+      <span class="spinner spinner-dark"></span>
+      <span>Updating option…</span>
+    </div>
+
+    {% for dimension in product.variations %}
+      <div class="variation-dimension" data-dimension-id="{{ dimension.id }}">
+        <div class="variation-header">
+          <span class="variation-label">{{ dimension.label }}:</span>
+          <span class="variation-selected-label">
+            {% for option in dimension.options %}
+              {% if option.selected %}{{ option.label }}{% endif %}
+            {% endfor %}
+          </span>
+        </div>
+
+        <div class="variation-options variation-options-{{ dimension.type }}" role="{% if dimension.type == 'dropdown' %}group{% else %}radiogroup{% endif %}" aria-label="{{ dimension.label }}">
+          {% if dimension.type == "dropdown" %}
+            <div class="variation-dropdown-wrap">
+              <select class="variation-dropdown" data-dimension="{{ dimension.id }}" aria-label="{{ dimension.label }}">
+                {% for option in dimension.options %}
+                  <option
+                    value="{{ option.asin }}"
+                    {% if option.selected %}selected{% endif %}
+                    {% if option.unavailable %}disabled{% endif %}
+                  >
+                    {{ option.label }}{% if option.unavailable %} — Unavailable{% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+          {% else %}
+          {% for option in dimension.options %}
+            <button
+              type="button"
+              class="variation-option{% if option.selected %} is-selected{% endif %}{% if option.unavailable %} is-unavailable{% endif %}{% if option.hidden %} is-collapsed{% endif %}"
+              data-asin="{{ option.asin }}"
+              data-dimension="{{ dimension.id }}"
+              data-label="{{ option.label }}"
+              role="radio"
+              aria-checked="{% if option.selected %}true{% else %}false{% endif %}"
+              aria-label="{{ option.label }}"
+            >
+              {% if dimension.type == "image" %}
+                <span class="variation-option-media">
+                  {% if option.image %}
+                    <img src="{{ option.image }}" alt="{{ option.label }}" loading="lazy">
+                  {% endif %}
+                </span>
+                <span class="variation-option-body">
+                  <span class="variation-option-name">{{ option.label }}</span>
+                  {% if option.price %}
+                    <span class="variation-option-price">
+                      {% if option.currency and option.currency|length == 1 %}{{ option.currency }}{% endif %}{{ option.price }}
+                    </span>
+                  {% elif option.availability %}
+                    <span class="variation-option-status">{{ option.availability }}</span>
+                  {% endif %}
+                </span>
+              {% else %}
+                <span class="variation-option-text">{{ option.label }}</span>
+              {% endif %}
+            </button>
+          {% endfor %}
+          {% endif %}
+        </div>
+
+        {% if dimension.has_hidden_options %}
+          <button type="button" class="variation-show-more" data-dimension="{{ dimension.id }}">
+            <i data-lucide="chevron-down" class="icon icon-btn"></i>
+            See more {{ dimension.label|lower }} options
+          </button>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="product-grid">
+    <aside class="product-sidebar">
+      {% if product.images %}
+        <div class="image-gallery">
+          <button type="button" class="main-image-wrap lightbox-trigger" data-index="0" aria-label="Open image in full view">
+            <img id="main-image" src="{{ product.images.0 }}" alt="Product image" loading="lazy">
+            <span class="image-expand-hint">
+              <i data-lucide="maximize-2" class="icon"></i>
+            </span>
+          </button>
+          {% if product.images|length > 1 %}
+            <div class="thumb-row">
+              {% for image in product.images %}
+                <button type="button" class="thumb-btn{% if forloop.first %} active{% endif %}" data-src="{{ image }}" data-index="{{ forloop.counter0 }}" aria-label="Preview image {{ forloop.counter }}">
+                  <img src="{{ image }}" alt="" loading="lazy">
+                </button>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="no-image-placeholder">
+          <i data-lucide="image-off" class="icon icon-placeholder"></i>
+          <p>No images found</p>
+        </div>
+      {% endif %}
+
+      <div class="quick-stats">
+        <div class="stat-card">
+          <span class="stat-label"><i data-lucide="tag" class="icon icon-stat"></i> Price</span>
+          <span class="stat-value price-value" id="product-price">
+            {% if product.currency and product.currency|length == 1 %}{{ product.currency }}{% endif %}{{ product.price|default:"—" }}
+            {% if product.currency and product.currency|length == 3 %}<small>{{ product.currency }}</small>{% endif %}
+          </span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label"><i data-lucide="star" class="icon icon-stat"></i> Rating</span>
+          <span class="stat-value" id="product-rating">{{ product.rating|default:"—" }}</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label"><i data-lucide="message-square" class="icon icon-stat"></i> Reviews</span>
+          <span class="stat-value" id="product-reviews">{{ product.review_count|default:"—" }}</span>
+        </div>
+        <div class="stat-card stat-wide">
+          <span class="stat-label"><i data-lucide="package-check" class="icon icon-stat"></i> Availability</span>
+          <span class="stat-value availability" id="product-availability">{{ product.availability|default:"—" }}</span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="product-details">
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="overview" role="tab" aria-selected="true">Overview</button>
+        {% if product.about_this_item %}
+          <button class="tab" data-tab="features" role="tab">Features</button>
+        {% endif %}
+        {% if product.specifications or product.specification_sections %}
+          <button class="tab" data-tab="specs" role="tab">Specs</button>
+        {% endif %}
+        {% if product.description or product.about_the_author or product.about_sections %}
+          <button class="tab" data-tab="more" role="tab">More info</button>
+        {% endif %}
+        {% if product.images %}
+          <button class="tab" data-tab="images" role="tab">Images ({{ product.images|length }})</button>
+        {% endif %}
+      </nav>
+
+      <div class="tab-panels">
+        <div class="tab-panel active" id="tab-overview" role="tabpanel">
+          <div class="info-grid">
+            <div class="info-item"><span>URL</span><a href="{{ product.url }}" target="_blank" rel="noopener" id="product-url">{{ product.url|truncatechars:60 }}</a></div>
+            <div class="info-item"><span>{% if product.store == "walmart" %}Item ID{% else %}ASIN{% endif %}</span><code id="product-asin">{{ product.asin|default:"—" }}</code></div>
+            <div class="info-item"><span>Store</span><span id="product-store">{{ product.store|title }}</span></div>
+            <div class="info-item"><span>Brand</span><span id="product-brand-info">{{ product.brand|default:"—" }}</span></div>
+            <div class="info-item"><span>Price</span><span id="product-price-info">{{ product.price|default:"Not available" }}</span></div>
+            <div class="info-item"><span>Rating</span><span id="product-rating-info">{{ product.rating|default:"—" }}</span></div>
+            <div class="info-item"><span>Reviews</span><span id="product-reviews-info">{{ product.review_count|default:"—" }}</span></div>
+          </div>
+          {% if product.about_this_item %}
+            <h3 class="section-title">Highlights</h3>
+            <ul class="bullet-list compact">
+              {% for bullet in product.about_this_item|slice:":5" %}
+                <li>{{ bullet }}</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </div>
+
+        {% if product.about_this_item %}
+        <div class="tab-panel" id="tab-features" role="tabpanel" hidden>
+          <h3 class="section-title">About this item</h3>
+          <ul class="bullet-list">
+            {% for bullet in product.about_this_item %}
+              <li>{{ bullet }}</li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+
+        {% if product.specifications or product.specification_sections %}
+        <div class="tab-panel" id="tab-specs" role="tabpanel" hidden>
+          {% if product.specification_sections %}
+            {% for section_name, section_specs in product.specification_sections.items %}
+              <div class="spec-section">
+                <h3 class="section-title">{{ section_name }}</h3>
+                <dl class="spec-list">
+                  {% for key, value in section_specs.items %}
+                    <div class="spec-row">
+                      <dt>{{ key }}</dt>
+                      <dd>{{ value }}</dd>
+                    </div>
+                  {% endfor %}
+                </dl>
+              </div>
+            {% endfor %}
+          {% endif %}
+
+          {% if product.specifications %}
+            <h3 class="section-title">All specifications</h3>
+            <dl class="spec-list">
+              {% for key, value in product.specifications.items %}
+                <div class="spec-row">
+                  <dt>{{ key }}</dt>
+                  <dd>{{ value }}</dd>
+                </div>
+              {% endfor %}
+            </dl>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        {% if product.description or product.about_the_author or product.about_sections %}
+        <div class="tab-panel" id="tab-more" role="tabpanel" hidden>
+          {% if product.description %}
+            <h3 class="section-title">Description</h3>
+            <p class="prose">{{ product.description }}</p>
+          {% endif %}
+
+          {% if product.about_the_author %}
+            <h3 class="section-title">About the author</h3>
+            <div class="author-block">
+              {% if product.author_image %}
+                <img src="{{ product.author_image }}" alt="Author" class="author-photo" loading="lazy">
+              {% endif %}
+              <p class="prose">{{ product.about_the_author }}</p>
+            </div>
+          {% endif %}
+
+          {% for section_title, section_text in product.about_sections.items %}
+            <h3 class="section-title">{{ section_title }}</h3>
+            <p class="prose">{{ section_text }}</p>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if product.images %}
+        <div class="tab-panel" id="tab-images" role="tabpanel" hidden>
+          <div class="image-grid">
+            {% for image in product.images %}
+              <button type="button" class="image-card lightbox-trigger" data-index="{{ forloop.counter0 }}" aria-label="Open image {{ forloop.counter }}">
+                <img src="{{ image }}" alt="Product image {{ forloop.counter }}" loading="lazy">
+                <span class="image-card-overlay">
+                  <i data-lucide="zoom-in" class="icon"></i>
+                </span>
+              </button>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<div id="image-lightbox" class="lightbox" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-label="Product image viewer">
+  <div class="lightbox-backdrop" data-lightbox-close></div>
+  <div class="lightbox-dialog">
+    <button type="button" class="lightbox-btn lightbox-close" data-lightbox-close aria-label="Close viewer">
+      <i data-lucide="x" class="icon"></i>
+    </button>
+    <button type="button" class="lightbox-btn lightbox-nav lightbox-prev" aria-label="Previous image">
+      <i data-lucide="chevron-left" class="icon"></i>
+    </button>
+    <button type="button" class="lightbox-btn lightbox-nav lightbox-next" aria-label="Next image">
+      <i data-lucide="chevron-right" class="icon"></i>
+    </button>
+    <div class="lightbox-stage">
+      <img id="lightbox-image" src="" alt="Product image enlarged">
+    </div>
+    <p class="lightbox-counter">
+      <span id="lightbox-current">1</span>
+      <span class="lightbox-counter-sep">/</span>
+      <span id="lightbox-total">{{ product.images|length }}</span>
+    </p>
+  </div>
+</div>
+
+{{ product.images|json_script:"product-images" }}
