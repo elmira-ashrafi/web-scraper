@@ -12,3 +12,4 @@ staticfiles/
 media/
 run_log.txt
 test_err.txt
+guide.txt
