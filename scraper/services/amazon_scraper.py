@@ -1,7 +1,7 @@
 """
 Amazon product page scraper.
 
-Uses curl_cffi to mimic a real browser and bypass Amazon's basic bot detection.
+Uses Playwright with the system Opera browser to load product pages.
 """
 
 from __future__ import annotations
@@ -13,17 +13,30 @@ import re
 from dataclasses import asdict, dataclass, field
 
 from bs4 import BeautifulSoup
-from curl_cffi import requests
 
-
-DEFAULT_URL = (
-    "https://www.amazon.com/SAMSUNG-Android-Durability-Included-Moonstone/dp/B0D851Z6NQ/ref=sr_1_1?_encoding=UTF8&content-id=amzn1.sym.f0670b1b-e1fd-4c67-a2b1-b8a347243628&dib=eyJ2IjoiMSJ9.W_F8CDdZJoOxq8vcbVshUF7bSuGWZWnF-VLPyPWyzFg4Eh8xv8LUUDIW2vk3nJc3ma8xgXm2ifrKlyWG_7TQV_-hS6XMNkCR3DQjLACMQIYaHsr4f5RaHUG1eHXdKr6JCe9VMIqLp65HmrYKK3tjVSOAwMF3GQs6cFuRe9I6lnzWc1XmBVcn59YmYKdopBqPpGzMziCpzP3gqCTvgtpYbHT49Wc5siJ_U2tv-FmDsjE.KvXFfu_wldORnm1G7bP8XMYU62t30wc5yFs1mjA6X7o&dib_tag=se&keywords=electronic+tablets&pd_rd_r=d2faab39-d7bf-4496-b520-53c5f3442622&pd_rd_w=reBbU&pd_rd_wg=kMzVi&qid=1786445039&sr=8-1"
-)
+from .browser import fetch_page as fetch_page_html
 
 HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
+
+HTTP_IMPERSONATE = "safari17_2_ios"
+
+AMAZON_TITLE_MARKERS = (
+    "productTitle",
+    'id="productTitle"',
+    'id="title"',
+    "id=\"title\"",
+)
+
+AMAZON_DETAIL_MARKERS = (
+    "inline-twister-expander-content-",
+    "native_dropdown_selected_",
+    "product-facts-detail",
+    "detailBullets_feature_div",
+    "productOverview_feature_div",
+)
 
 
 @dataclass
@@ -70,25 +83,70 @@ def clean_text(value: str | None) -> str | None:
     return cleaned or None
 
 
-def fetch_page(url: str, timeout: int = 30) -> str:
-    """Download an Amazon product page."""
+def amazon_title_markers(url: str) -> tuple[str, ...]:
+    markers = list(AMAZON_TITLE_MARKERS)
+    asin = extract_asin(url)
+    if asin:
+        markers.append(asin)
+    return tuple(markers)
+
+
+def is_valid_amazon_html(html: str, url: str) -> bool:
+    if "validateCaptcha" in html:
+        return False
+
+    if any(marker in html for marker in AMAZON_TITLE_MARKERS):
+        return True
+
+    asin = extract_asin(url)
+    return bool(asin and asin in html and len(html) > 200_000)
+
+
+def fetch_page_http(url: str, timeout: int = 30) -> str:
+    from curl_cffi import requests
+
     response = requests.get(
         url,
         headers=HEADERS,
-        impersonate="chrome120",
+        impersonate=HTTP_IMPERSONATE,
         timeout=timeout,
     )
     response.raise_for_status()
+    return response.text
 
-    if "validateCaptcha" in response.text:
-        raise RuntimeError(
-            "Amazon returned a CAPTCHA page. Try again later or use a different IP."
-        )
 
-    if "productTitle" not in response.text:
+def fetch_page_browser(url: str, timeout: int = 90, *, reset_storage: bool = False) -> str:
+    settle_ms = 3000 if reset_storage else 1500
+    return fetch_page_html(
+        url,
+        timeout=timeout,
+        ready_stages=(amazon_title_markers(url),),
+        optional_ready_stages=(AMAZON_DETAIL_MARKERS,),
+        fail_texts=("validateCaptcha",),
+        settle_ms=settle_ms,
+        reset_storage=reset_storage,
+    )
+
+
+def fetch_page(url: str, timeout: int = 90, *, reset_storage: bool = False) -> str:
+    """Download an Amazon product page."""
+    browser_error: Exception | None = None
+    try:
+        html = fetch_page_browser(url, timeout=timeout, reset_storage=reset_storage)
+        if is_valid_amazon_html(html, url):
+            return html
+    except Exception as error:
+        browser_error = error
+
+    html = fetch_page_http(url, timeout=min(timeout, 30))
+    if not is_valid_amazon_html(html, url):
+        if browser_error:
+            raise RuntimeError(
+                f"Amazon page could not be loaded. Browser error: {browser_error}"
+            ) from browser_error
         raise RuntimeError("Unexpected page content. Product data was not found.")
 
-    return response.text
+    return html
 
 
 def extract_currency(price_text: str, soup: BeautifulSoup | None = None) -> str | None:
@@ -285,10 +343,15 @@ def find_asin_from_url_hint(url: str, dimension_data: dict[str, list[str]]) -> s
     return best_asin if best_score > 0 else None
 
 
-def fetch_asin_price(asin: str, base_url: str | None = None) -> tuple[str | None, str | None]:
+def fetch_asin_price(
+    asin: str,
+    base_url: str | None = None,
+    *,
+    reset_storage: bool = False,
+) -> tuple[str | None, str | None]:
     """Fetch a variant page when the parent listing has no buy-box price."""
     variant_url = asin_to_url(asin, base_url)
-    html = fetch_page(variant_url)
+    html = fetch_page(variant_url, reset_storage=reset_storage)
     soup = BeautifulSoup(html, "lxml")
     return parse_price(soup)
 
@@ -774,21 +837,32 @@ def parse_swatch_availability(swatch: BeautifulSoup) -> str | None:
 
 
 def parse_dimension_label(soup: BeautifulSoup, dimension_id: str) -> str:
-    label_element = soup.select_one(
-        f"#inline-twister-row-{dimension_id} .a-form-label, "
-        f"#inline-twister-dim-title-{dimension_id}"
-    )
-    if label_element:
-        label = clean_text(label_element.get_text())
-        if label:
-            return label.rstrip(":")
-
     aria_label = soup.select_one(f"#dim-values-aria-label-{dimension_id}")
     if aria_label:
         label_text = clean_text(aria_label.get_text()) or ""
         match = re.search(r"Make a (.+?) selection", label_text, re.IGNORECASE)
         if match:
             return match.group(1)
+
+    variation_row = soup.select_one(f"#variation_{dimension_id} .a-form-label")
+    if variation_row:
+        label = clean_text(variation_row.get_text())
+        if label:
+            return label.rstrip(":")
+
+    label_element = soup.select_one(f"#inline-twister-row-{dimension_id} .a-form-label")
+    if label_element:
+        label = clean_text(label_element.get_text())
+        if label:
+            return label.rstrip(":")
+
+    title_element = soup.select_one(f"#inline-twister-dim-title-{dimension_id}")
+    if title_element:
+        label = clean_text(title_element.get_text())
+        if label:
+            if ":" in label:
+                label = label.split(":", 1)[0]
+            return label.rstrip(":")
 
     return humanize_dimension_id(dimension_id)
 
@@ -817,11 +891,15 @@ def parse_inline_twister_option(swatch: BeautifulSoup) -> dict | None:
     if availability and "unavailable" in availability.lower():
         unavailable = True
 
+    selected = swatch.get("data-initiallyselected", "").lower() == "true"
     style = swatch.get("style", "")
     hidden = (
-        swatch.get("data-collapsed-view", "").lower() == "false"
-        or "display: none" in style.replace(" ", "")
-        or "display:none" in style.replace(" ", "")
+        not selected
+        and (
+            swatch.get("data-collapsed-view", "").lower() == "false"
+            or "display: none" in style.replace(" ", "")
+            or "display:none" in style.replace(" ", "")
+        )
     )
 
     return {
@@ -831,7 +909,7 @@ def parse_inline_twister_option(swatch: BeautifulSoup) -> dict | None:
         "price": price,
         "currency": currency,
         "availability": availability,
-        "selected": swatch.get("data-initiallyselected", "").lower() == "true",
+        "selected": selected,
         "unavailable": unavailable,
         "hidden": hidden,
     }
@@ -1137,10 +1215,10 @@ def parse_product_page(html: str, url: str) -> ProductData:
     )
 
 
-def scrape_amazon_product(url: str) -> ProductData:
+def scrape_amazon_product(url: str, *, reset_storage: bool = False) -> ProductData:
     """Scrape a single Amazon product page."""
     canonical_url = url.split("?")[0]
-    html = fetch_page(url)
+    html = fetch_page(url, reset_storage=reset_storage)
     return parse_product_page(html, canonical_url)
 
 

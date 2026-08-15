@@ -9,6 +9,7 @@ from django.views.decorators.http import require_http_methods
 from .forms import ScrapeForm
 from .services.amazon_scraper import ProductData, build_csv_content, product_to_dict
 from .services.scraper import scrape_product, scrape_variant as fetch_variant
+from .services.sync_runner import run_in_scraper_thread
 
 SESSION_KEY = "last_product"
 
@@ -50,7 +51,7 @@ def scrape(request):
 
     url = form.cleaned_data["url"]
     try:
-        product = scrape_product(url)
+        product = run_in_scraper_thread(scrape_product, url)
     except Exception as error:
         form.add_error(None, str(error))
         return render(
@@ -86,7 +87,12 @@ def scrape_variant(request):
         return JsonResponse({"error": "Invalid ASIN."}, status=400)
 
     try:
-        product = fetch_variant(store, product_id, current.url if current else None)
+        product = run_in_scraper_thread(
+            fetch_variant,
+            store,
+            product_id,
+            current.url if current else None,
+        )
     except Exception as error:
         return JsonResponse({"error": str(error)}, status=400)
 

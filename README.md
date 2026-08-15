@@ -14,12 +14,13 @@ Try it online: **[https://web-scraper.ashrafisolutions.com](https://web-scraper.
 - **Rich product data** — title, price, rating, availability, brand, description, specs, images
 - **Variant switching** — browse and load different product options (size, color, configuration, etc.)
 - **Export** — download scraped data as JSON or CSV
-- **Bot-resistant fetching** — uses `curl_cffi` with browser impersonation to reduce blocking
+- **Bot-resistant fetching** — Amazon uses Opera (Playwright) with a fast Safari `curl_cffi` fallback; Walmart uses `curl_cffi`
 
 ## Requirements
 
 - Python 3.10+
 - pip
+- [Opera](https://www.opera.com/download) browser installed on the system
 
 ## Setup
 
@@ -29,6 +30,12 @@ cd web-scraper
 pip install -r requirements.txt
 python manage.py migrate
 python manage.py runserver
+```
+
+If Opera is installed somewhere non-standard, point the scraper at it:
+
+```bash
+export OPERA_PATH="/path/to/opera"
 ```
 
 Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
@@ -55,6 +62,7 @@ web-scraper/
 ├── amazon_project/          # Django project settings
 ├── scraper/
 │   ├── services/
+│   │   ├── browser.py         # Playwright + Opera page fetcher
 │   │   ├── amazon_scraper.py
 │   │   ├── walmart_scraper.py
 │   │   └── scraper.py       # Unified store router
@@ -68,7 +76,8 @@ web-scraper/
 
 - **Django 4** — web framework
 - **BeautifulSoup + lxml** — HTML parsing
-- **curl_cffi** — HTTP requests with browser TLS fingerprinting
+- **Playwright + Opera** — Amazon page loading (variations, apparel specs)
+- **curl_cffi** — Amazon fallback and Walmart page loading
 
 ## Notes
 

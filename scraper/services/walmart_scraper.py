@@ -23,7 +23,6 @@ from .amazon_scraper import (
     normalize_section_name,
 )
 
-
 HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",

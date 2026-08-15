@@ -22,7 +22,7 @@ def scrape_product(url: str) -> ProductData:
     store = detect_store(url)
     if store == "walmart":
         return scrape_walmart_product(url)
-    return scrape_amazon_product(url)
+    return scrape_amazon_product(url, reset_storage=True)
 
 
 def scrape_variant(store: str, product_id: str, base_url: str | None = None) -> ProductData:
@@ -37,4 +37,4 @@ def scrape_variant(store: str, product_id: str, base_url: str | None = None) -> 
 
     from .amazon_scraper import asin_to_url
 
-    return scrape_amazon_product(asin_to_url(product_id, base_url))
+    return scrape_amazon_product(asin_to_url(product_id, base_url), reset_storage=False)
