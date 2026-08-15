@@ -2,6 +2,12 @@
 
 A Django web app that scrapes product details from **Amazon** and **Walmart** product pages. Paste a URL and get back the title, price, specs, images, variations, and more — organized in a clean UI with JSON and CSV export.
 
+## Live demo
+
+Try it online: **[https://web-scraper.ashrafisolutions.com](https://web-scraper.ashrafisolutions.com)**
+
+![Live demo screenshot](docs/demo-screenshot.png)
+
 ## Features
 
 - **Amazon & Walmart support** — automatically detects the store from the URL
