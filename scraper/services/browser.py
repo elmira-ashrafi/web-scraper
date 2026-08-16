@@ -68,16 +68,29 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _wait_for_cdp(port: int, process: subprocess.Popen, timeout_s: float) -> str:
+def _read_stderr_tail(log_path: str, max_chars: int = 4000) -> str:
+    try:
+        with open(log_path, "r", errors="replace") as f:
+            content = f.read()
+        return content[-max_chars:].strip()
+    except OSError:
+        return "(no stderr captured)"
+
+
+def _wait_for_cdp(
+    port: int, process: subprocess.Popen, timeout_s: float, log_path: str
+) -> str:
     """Poll the CDP HTTP endpoint until Opera is ready, return the ws endpoint base."""
     endpoint = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + timeout_s
 
     while time.monotonic() < deadline:
         if process.poll() is not None:
+            stderr_tail = _read_stderr_tail(log_path)
             raise RuntimeError(
                 f"Opera process exited early (code={process.returncode}) "
-                "before exposing the remote debugging port."
+                "before exposing the remote debugging port.\n"
+                f"--- Opera stderr tail ---\n{stderr_tail}"
             )
         try:
             with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1):
@@ -86,12 +99,17 @@ def _wait_for_cdp(port: int, process: subprocess.Popen, timeout_s: float) -> str
             time.sleep(0.2)
 
     process.kill()
-    raise RuntimeError("Opera did not expose the remote debugging port in time.")
+    stderr_tail = _read_stderr_tail(log_path)
+    raise RuntimeError(
+        "Opera did not expose the remote debugging port in time.\n"
+        f"--- Opera stderr tail ---\n{stderr_tail}"
+    )
 
 
-def _spawn_opera(executable_path: str, *, headless: bool) -> tuple[subprocess.Popen, int, str]:
+def _spawn_opera(executable_path: str, *, headless: bool) -> tuple[subprocess.Popen, int, str, str]:
     port = _find_free_port()
     user_data_dir = tempfile.mkdtemp(prefix="opera-profile-")
+    log_fd, log_path = tempfile.mkstemp(prefix="opera-stderr-", suffix=".log")
 
     args = [
         executable_path,
@@ -116,24 +134,30 @@ def _spawn_opera(executable_path: str, *, headless: bool) -> tuple[subprocess.Po
     if headless:
         args.insert(1, "--headless=new")
 
-    process = subprocess.Popen(
-        args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return process, port, user_data_dir
+    with os.fdopen(log_fd, "wb", closefd=True) as log_file:
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.DEVNULL,
+            stderr=log_file,
+        )
+    return process, port, user_data_dir, log_path
 
 
 def launch_opera(playwright: Playwright, *, headless: bool = True) -> tuple[Browser, subprocess.Popen, str]:
     executable_path = resolve_opera_executable()
-    process, port, user_data_dir = _spawn_opera(executable_path, headless=headless)
+    process, port, user_data_dir, log_path = _spawn_opera(executable_path, headless=headless)
 
     try:
-        endpoint = _wait_for_cdp(port, process, CDP_READY_TIMEOUT_S)
+        endpoint = _wait_for_cdp(port, process, CDP_READY_TIMEOUT_S, log_path)
         browser = playwright.chromium.connect_over_cdp(endpoint)
     except Exception:
         process.kill()
         raise
+    finally:
+        try:
+            os.remove(log_path)
+        except OSError:
+            pass
 
     return browser, process, user_data_dir
 
