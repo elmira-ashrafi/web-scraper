@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
+import subprocess
+import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
 
 DEFAULT_TIMEOUT_MS = 60_000
 POLL_INTERVAL_MS = 500
+CDP_READY_TIMEOUT_S = 20
 
 OPERA_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -55,17 +61,81 @@ def resolve_opera_executable() -> str:
     )
 
 
-def launch_opera(playwright: Playwright, *, headless: bool = True) -> Browser:
-    executable_path = resolve_opera_executable()
-    return playwright.chromium.launch(
-        executable_path=executable_path,
-        headless=headless,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-        ],
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
+
+
+def _wait_for_cdp(port: int, process: subprocess.Popen, timeout_s: float) -> str:
+    """Poll the CDP HTTP endpoint until Opera is ready, return the ws endpoint base."""
+    endpoint = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + timeout_s
+
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"Opera process exited early (code={process.returncode}) "
+                "before exposing the remote debugging port."
+            )
+        try:
+            with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1):
+                return endpoint
+        except (urllib.error.URLError, ConnectionError, OSError):
+            time.sleep(0.2)
+
+    process.kill()
+    raise RuntimeError("Opera did not expose the remote debugging port in time.")
+
+
+def _spawn_opera(executable_path: str, *, headless: bool) -> tuple[subprocess.Popen, int, str]:
+    port = _find_free_port()
+    user_data_dir = tempfile.mkdtemp(prefix="opera-profile-")
+
+    args = [
+        executable_path,
+        f"--remote-debugging-port={port}",
+        "--remote-debugging-address=127.0.0.1",
+        f"--user-data-dir={user_data_dir}",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-setuid-sandbox",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--metrics-recording-only",
+        "--mute-audio",
+        "about:blank",
+    ]
+    if headless:
+        args.insert(1, "--headless=new")
+
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
+    return process, port, user_data_dir
+
+
+def launch_opera(playwright: Playwright, *, headless: bool = True) -> tuple[Browser, subprocess.Popen, str]:
+    executable_path = resolve_opera_executable()
+    process, port, user_data_dir = _spawn_opera(executable_path, headless=headless)
+
+    try:
+        endpoint = _wait_for_cdp(port, process, CDP_READY_TIMEOUT_S)
+        browser = playwright.chromium.connect_over_cdp(endpoint)
+    except Exception:
+        process.kill()
+        raise
+
+    return browser, process, user_data_dir
 
 
 def page_contains_markers(page: Page, markers: tuple[str, ...]) -> bool:
@@ -212,6 +282,8 @@ class OperaBrowserSession:
         self._lock = threading.Lock()
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
+        self._process: subprocess.Popen | None = None
+        self._user_data_dir: str | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._headless = True
@@ -242,7 +314,9 @@ class OperaBrowserSession:
             return
 
         self._playwright = sync_playwright().start()
-        self._browser = launch_opera(self._playwright, headless=headless)
+        self._browser, self._process, self._user_data_dir = launch_opera(
+            self._playwright, headless=headless
+        )
         self._context = self._create_context()
         self._page = self._context.new_page()
 
@@ -258,17 +332,32 @@ class OperaBrowserSession:
     def close(self) -> None:
         with self._lock:
             if self._context is not None:
-                self._context.close()
+                try:
+                    self._context.close()
+                except Exception:
+                    pass
                 self._context = None
                 self._page = None
 
             if self._browser is not None:
-                self._browser.close()
+                try:
+                    self._browser.close()
+                except Exception:
+                    pass
                 self._browser = None
 
             if self._playwright is not None:
                 self._playwright.stop()
                 self._playwright = None
+
+            if self._process is not None:
+                self._process.kill()
+                self._process.wait(timeout=5)
+                self._process = None
+
+            if self._user_data_dir is not None:
+                shutil.rmtree(self._user_data_dir, ignore_errors=True)
+                self._user_data_dir = None
 
     def fetch_page(
         self,
