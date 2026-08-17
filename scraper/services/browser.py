@@ -69,13 +69,24 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _read_stderr_tail(log_path: str, max_chars: int = 4000) -> str:
+def _read_stderr_tail(log_path: str, max_lines: int = 300, max_chars: int = 12000) -> str:
     try:
         with open(log_path, "r", errors="replace") as f:
-            content = f.read()
-        return content[-max_chars:].strip()
+            lines = f.readlines()
     except OSError:
         return "(no stderr captured)"
+
+    # Collapse consecutive duplicate lines (dbus/GSettings spam repeats a lot
+    # and can push the one unique fatal line out of a small tail).
+    deduped: list[str] = []
+    for line in lines:
+        if deduped and deduped[-1] == line:
+            continue
+        deduped.append(line)
+
+    tail = deduped[-max_lines:]
+    content = "".join(tail).strip()
+    return content[-max_chars:]
 
 
 def _wait_for_cdp(
