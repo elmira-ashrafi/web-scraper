@@ -1,24 +1,28 @@
-"""Fetch product pages with a persistent Playwright Opera browser session."""
+"""Fetch product pages with a persistent Playwright browser session.
+
+Note: this uses Playwright's own managed Chromium build (installed via
+`playwright install chromium`), not a real Opera binary. Opera-stable in
+our container environment was found to crash-loop indefinitely right after
+startup (SIGTRAP, auto-restarting under a new PID every ~1.3s, forever) —
+apparently unrelated to sandboxing, /dev/shm size, or async context, and
+not something fixable from the outside. Since what actually matters for
+not being blocked by Amazon/Walmart is the browser's HTTP/JS fingerprint
+(User-Agent, navigator properties, etc.) rather than which binary is
+literally running, we keep spoofing an Opera identity via OPERA_USER_AGENT
+and the stealth init script below, on top of Playwright's own
+well-supported, officially tested Chromium.
+"""
 
 from __future__ import annotations
 
 import concurrent.futures
-import os
-import shutil
-import socket
-import subprocess
-import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
-from pathlib import Path
 
 from playwright.sync_api import Browser, BrowserContext, Page, Playwright, sync_playwright
 
 DEFAULT_TIMEOUT_MS = 60_000
 POLL_INTERVAL_MS = 500
-CDP_READY_TIMEOUT_S = 20
 
 OPERA_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -31,180 +35,14 @@ Object.defineProperty(navigator, 'webdriver', {
 });
 """
 
-OPERA_EXECUTABLE_CANDIDATES = (
-    "/usr/bin/opera",
-    "/usr/bin/opera-stable",
-    "/snap/bin/opera",
-    "/Applications/Opera.app/Contents/MacOS/Opera",
-    r"C:\Program Files\Opera\opera.exe",
-    r"C:\Program Files (x86)\Opera\opera.exe",
-)
+LAUNCH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--disable-dev-shm-usage",
+]
 
 
-def resolve_opera_executable() -> str:
-    configured = os.environ.get("OPERA_PATH", "").strip()
-    if configured:
-        path = Path(configured)
-        if path.is_file():
-            return str(path)
-        raise RuntimeError(f"OPERA_PATH does not point to a file: {configured}")
-
-    for candidate in OPERA_EXECUTABLE_CANDIDATES:
-        if Path(candidate).is_file():
-            return candidate
-
-    discovered = shutil.which("opera") or shutil.which("opera-stable")
-    if discovered:
-        return discovered
-
-    raise RuntimeError(
-        "Opera was not found. Install Opera or set OPERA_PATH to the browser executable."
-    )
-
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
-
-
-def _read_stderr_tail(log_path: str, max_lines: int = 300, max_chars: int = 12000) -> str:
-    try:
-        with open(log_path, "r", errors="replace") as f:
-            lines = f.readlines()
-    except OSError:
-        return "(no stderr captured)"
-
-    # Collapse consecutive duplicate lines (dbus/GSettings spam repeats a lot
-    # and can push the one unique fatal line out of a small tail).
-    deduped: list[str] = []
-    for line in lines:
-        if deduped and deduped[-1] == line:
-            continue
-        deduped.append(line)
-
-    tail = deduped[-max_lines:]
-    content = "".join(tail).strip()
-    return content[-max_chars:]
-
-
-def _wait_for_cdp(
-    port: int, process: subprocess.Popen, timeout_s: float, log_path: str
-) -> str:
-    """Poll the CDP HTTP endpoint until Opera is ready, return the ws endpoint base.
-
-    Opera has been observed to crash its initial process and immediately
-    self-restart under a *different* child PID while keeping the same
-    --remote-debugging-port. So the original `process` exiting is NOT
-    treated as fatal on its own — we keep polling the HTTP endpoint for the
-    full timeout window, since a successor process may still come up and
-    serve it. We only give up once the whole window elapses with nothing
-    answering.
-    """
-    endpoint = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + timeout_s
-    process_exited_at: float | None = None
-
-    while time.monotonic() < deadline:
-        if process_exited_at is None and process.poll() is not None:
-            process_exited_at = time.monotonic()
-
-        try:
-            with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1):
-                return endpoint
-        except (urllib.error.URLError, ConnectionError, OSError):
-            time.sleep(0.2)
-
-    try:
-        process.kill()
-    except OSError:
-        pass
-
-    stderr_tail = _read_stderr_tail(log_path)
-    exited_note = (
-        f"Original process exited early (code={process.returncode}) at "
-        f"t+{process_exited_at - (deadline - timeout_s):.1f}s, port never answered afterwards.\n"
-        if process_exited_at is not None
-        else "Original process was still alive when we gave up.\n"
-    )
-    raise RuntimeError(
-        "Opera did not expose the remote debugging port in time.\n"
-        f"{exited_note}"
-        f"--- Opera stderr tail ---\n{stderr_tail}"
-    )
-
-
-def _spawn_opera(executable_path: str, *, headless: bool) -> tuple[subprocess.Popen, int, str, str]:
-    port = _find_free_port()
-    user_data_dir = tempfile.mkdtemp(prefix="opera-profile-")
-    log_fd, log_path = tempfile.mkstemp(prefix="opera-stderr-", suffix=".log")
-
-    args = [
-        executable_path,
-        f"--remote-debugging-port={port}",
-        "--remote-debugging-address=127.0.0.1",
-        f"--user-data-dir={user_data_dir}",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--disable-setuid-sandbox",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--disable-default-apps",
-        "--disable-sync",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--metrics-recording-only",
-        "--mute-audio",
-        "about:blank",
-    ]
-    if headless:
-        args.insert(1, "--headless")
-
-    with os.fdopen(log_fd, "wb", closefd=True) as log_file:
-        process = subprocess.Popen(
-            args,
-            stdout=subprocess.DEVNULL,
-            stderr=log_file,
-        )
-    return process, port, user_data_dir, log_path
-
-
-def launch_opera(playwright: Playwright, *, headless: bool = True) -> tuple[Browser, subprocess.Popen, str]:
-    executable_path = resolve_opera_executable()
-    process, port, user_data_dir, log_path = _spawn_opera(executable_path, headless=headless)
-
-    try:
-        endpoint = _wait_for_cdp(port, process, CDP_READY_TIMEOUT_S, log_path)
-        last_exc: Exception | None = None
-        browser = None
-        for attempt in range(2):
-            try:
-                browser = playwright.chromium.connect_over_cdp(endpoint)
-                break
-            except Exception as exc:
-                last_exc = exc
-                time.sleep(1.5)
-        if browser is None:
-            stderr_tail = _read_stderr_tail(log_path)
-            exit_code = process.poll()
-            raise RuntimeError(
-                f"Failed to attach to Opera over CDP after retrying ({last_exc}). "
-                f"Original process exit code: {exit_code}.\n"
-                f"--- Opera stderr tail ---\n{stderr_tail}"
-            ) from last_exc
-    except Exception:
-        process.kill()
-        raise
-    finally:
-        try:
-            os.remove(log_path)
-        except OSError:
-            pass
-
-    return browser, process, user_data_dir
+def launch_browser(playwright: Playwright, *, headless: bool = True) -> Browser:
+    return playwright.chromium.launch(headless=headless, args=LAUNCH_ARGS)
 
 
 def page_contains_markers(page: Page, markers: tuple[str, ...]) -> bool:
@@ -342,7 +180,7 @@ def load_page_in_browser(
 
 
 class OperaBrowserSession:
-    """Keeps one Opera browser alive and reuses it across scrapes."""
+    """Keeps one browser alive (Opera-spoofed via UA) and reuses it across scrapes."""
 
     _instance: OperaBrowserSession | None = None
     _instance_lock = threading.Lock()
@@ -351,19 +189,17 @@ class OperaBrowserSession:
         self._lock = threading.Lock()
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
-        self._process: subprocess.Popen | None = None
-        self._user_data_dir: str | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._headless = True
         # Playwright's sync API must always run on the same plain OS thread,
-        # and that thread must never have an asyncio event loop attached to it
-        # (Django/asgiref worker threads sometimes do). A single-worker
+        # and that thread must never have an asyncio event loop attached to
+        # it (Django/asgiref worker threads sometimes do). A single-worker
         # executor gives us one dedicated, plain thread for the whole
         # lifetime of the process, isolated from whatever thread Django
         # happens to call us from.
         self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="opera-browser"
+            max_workers=1, thread_name_prefix="scraper-browser"
         )
 
     @classmethod
@@ -375,7 +211,7 @@ class OperaBrowserSession:
 
     def _create_context(self) -> BrowserContext:
         if not self._browser:
-            raise RuntimeError("Opera browser is not running.")
+            raise RuntimeError("Browser is not running.")
 
         context = self._browser.new_context(
             locale="en-US",
@@ -392,9 +228,7 @@ class OperaBrowserSession:
             return
 
         self._playwright = sync_playwright().start()
-        self._browser, self._process, self._user_data_dir = launch_opera(
-            self._playwright, headless=headless
-        )
+        self._browser = launch_browser(self._playwright, headless=headless)
         self._context = self._create_context()
         self._page = self._context.new_page()
 
@@ -427,15 +261,6 @@ class OperaBrowserSession:
             if self._playwright is not None:
                 self._playwright.stop()
                 self._playwright = None
-
-            if self._process is not None:
-                self._process.kill()
-                self._process.wait(timeout=5)
-                self._process = None
-
-            if self._user_data_dir is not None:
-                shutil.rmtree(self._user_data_dir, ignore_errors=True)
-                self._user_data_dir = None
 
     def close(self) -> None:
         """Tear down the browser. Safe to call from any thread."""
@@ -525,7 +350,7 @@ def fetch_page(
     headless: bool = True,
     reset_storage: bool = False,
 ) -> str:
-    """Open a URL in the shared Opera session and return the rendered HTML."""
+    """Open a URL in the shared browser session and return the rendered HTML."""
     return OperaBrowserSession.get().fetch_page(
         url,
         timeout=timeout,
