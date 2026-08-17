@@ -92,28 +92,45 @@ def _read_stderr_tail(log_path: str, max_lines: int = 300, max_chars: int = 1200
 def _wait_for_cdp(
     port: int, process: subprocess.Popen, timeout_s: float, log_path: str
 ) -> str:
-    """Poll the CDP HTTP endpoint until Opera is ready, return the ws endpoint base."""
+    """Poll the CDP HTTP endpoint until Opera is ready, return the ws endpoint base.
+
+    Opera has been observed to crash its initial process and immediately
+    self-restart under a *different* child PID while keeping the same
+    --remote-debugging-port. So the original `process` exiting is NOT
+    treated as fatal on its own — we keep polling the HTTP endpoint for the
+    full timeout window, since a successor process may still come up and
+    serve it. We only give up once the whole window elapses with nothing
+    answering.
+    """
     endpoint = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + timeout_s
+    process_exited_at: float | None = None
 
     while time.monotonic() < deadline:
-        if process.poll() is not None:
-            stderr_tail = _read_stderr_tail(log_path)
-            raise RuntimeError(
-                f"Opera process exited early (code={process.returncode}) "
-                "before exposing the remote debugging port.\n"
-                f"--- Opera stderr tail ---\n{stderr_tail}"
-            )
+        if process_exited_at is None and process.poll() is not None:
+            process_exited_at = time.monotonic()
+
         try:
             with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1):
                 return endpoint
         except (urllib.error.URLError, ConnectionError, OSError):
             time.sleep(0.2)
 
-    process.kill()
+    try:
+        process.kill()
+    except OSError:
+        pass
+
     stderr_tail = _read_stderr_tail(log_path)
+    exited_note = (
+        f"Original process exited early (code={process.returncode}) at "
+        f"t+{process_exited_at - (deadline - timeout_s):.1f}s, port never answered afterwards.\n"
+        if process_exited_at is not None
+        else "Original process was still alive when we gave up.\n"
+    )
     raise RuntimeError(
         "Opera did not expose the remote debugging port in time.\n"
+        f"{exited_note}"
         f"--- Opera stderr tail ---\n{stderr_tail}"
     )
 
@@ -161,16 +178,23 @@ def launch_opera(playwright: Playwright, *, headless: bool = True) -> tuple[Brow
 
     try:
         endpoint = _wait_for_cdp(port, process, CDP_READY_TIMEOUT_S, log_path)
-        try:
-            browser = playwright.chromium.connect_over_cdp(endpoint)
-        except Exception as exc:
+        last_exc: Exception | None = None
+        browser = None
+        for attempt in range(2):
+            try:
+                browser = playwright.chromium.connect_over_cdp(endpoint)
+                break
+            except Exception as exc:
+                last_exc = exc
+                time.sleep(1.5)
+        if browser is None:
             stderr_tail = _read_stderr_tail(log_path)
             exit_code = process.poll()
             raise RuntimeError(
-                f"Failed to attach to Opera over CDP ({exc}). "
-                f"Process exit code at that moment: {exit_code}.\n"
+                f"Failed to attach to Opera over CDP after retrying ({last_exc}). "
+                f"Original process exit code: {exit_code}.\n"
                 f"--- Opera stderr tail ---\n{stderr_tail}"
-            ) from exc
+            ) from last_exc
     except Exception:
         process.kill()
         raise
