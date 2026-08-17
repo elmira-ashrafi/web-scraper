@@ -6,7 +6,13 @@ A Django web app that scrapes product details from **Amazon** and **Walmart** pr
 
 Try it online: **[https://web-scraper.ashrafisolutions.com](https://web-scraper.ashrafisolutions.com)**
 
-![Live demo screenshot](docs/demo-screenshot.png)
+### Amazon screenshot:
+
+![Live demo screenshot](docs/demo-amazon-screenshot.png)
+
+### Walmart screenshot:
+
+![Live demo screenshot](docs/demo-walmart-screenshot.png)
 
 ## Features
 
