@@ -144,7 +144,7 @@ def _spawn_opera(executable_path: str, *, headless: bool) -> tuple[subprocess.Po
         "about:blank",
     ]
     if headless:
-        args.insert(1, "--headless=new")
+        args.insert(1, "--headless")
 
     with os.fdopen(log_fd, "wb", closefd=True) as log_file:
         process = subprocess.Popen(
@@ -161,7 +161,16 @@ def launch_opera(playwright: Playwright, *, headless: bool = True) -> tuple[Brow
 
     try:
         endpoint = _wait_for_cdp(port, process, CDP_READY_TIMEOUT_S, log_path)
-        browser = playwright.chromium.connect_over_cdp(endpoint)
+        try:
+            browser = playwright.chromium.connect_over_cdp(endpoint)
+        except Exception as exc:
+            stderr_tail = _read_stderr_tail(log_path)
+            exit_code = process.poll()
+            raise RuntimeError(
+                f"Failed to attach to Opera over CDP ({exc}). "
+                f"Process exit code at that moment: {exit_code}.\n"
+                f"--- Opera stderr tail ---\n{stderr_tail}"
+            ) from exc
     except Exception:
         process.kill()
         raise
