@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import shutil
 import socket
@@ -311,6 +312,15 @@ class OperaBrowserSession:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._headless = True
+        # Playwright's sync API must always run on the same plain OS thread,
+        # and that thread must never have an asyncio event loop attached to it
+        # (Django/asgiref worker threads sometimes do). A single-worker
+        # executor gives us one dedicated, plain thread for the whole
+        # lifetime of the process, isolated from whatever thread Django
+        # happens to call us from.
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="opera-browser"
+        )
 
     @classmethod
     def get(cls) -> OperaBrowserSession:
@@ -353,7 +363,7 @@ class OperaBrowserSession:
         self._context = self._create_context()
         self._page = self._context.new_page()
 
-    def close(self) -> None:
+    def _close_impl(self) -> None:
         with self._lock:
             if self._context is not None:
                 try:
@@ -383,7 +393,13 @@ class OperaBrowserSession:
                 shutil.rmtree(self._user_data_dir, ignore_errors=True)
                 self._user_data_dir = None
 
-    def fetch_page(
+    def close(self) -> None:
+        """Tear down the browser. Safe to call from any thread."""
+        future = self._executor.submit(self._close_impl)
+        future.result()
+        self._executor.shutdown(wait=True)
+
+    def _fetch_page_impl(
         self,
         url: str,
         *,
@@ -418,6 +434,38 @@ class OperaBrowserSession:
                 fail_texts=fail_texts,
                 settle_ms=settle_ms,
             )
+
+    def fetch_page(
+        self,
+        url: str,
+        *,
+        timeout: int = 60,
+        ready_text: str | None = None,
+        ready_text_any: tuple[str, ...] = (),
+        ready_stages: tuple[tuple[str, ...], ...] = (),
+        optional_ready_stages: tuple[tuple[str, ...], ...] = (),
+        fail_texts: tuple[str, ...] = (),
+        settle_ms: int = 2000,
+        headless: bool = True,
+        reset_storage: bool = False,
+    ) -> str:
+        """Fetch a page. Safe to call from any thread (Django view, etc.) —
+        the actual Playwright work always runs on the dedicated browser thread.
+        """
+        future = self._executor.submit(
+            self._fetch_page_impl,
+            url,
+            timeout=timeout,
+            ready_text=ready_text,
+            ready_text_any=ready_text_any,
+            ready_stages=ready_stages,
+            optional_ready_stages=optional_ready_stages,
+            fail_texts=fail_texts,
+            settle_ms=settle_ms,
+            headless=headless,
+            reset_storage=reset_storage,
+        )
+        return future.result()
 
 
 def fetch_page(
